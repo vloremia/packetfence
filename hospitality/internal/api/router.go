@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/inverse-inc/packetfence/hospitality/internal/models"
 	"github.com/inverse-inc/packetfence/hospitality/internal/services/guestauth"
+	"github.com/inverse-inc/packetfence/hospitality/internal/services/payment"
 	"github.com/inverse-inc/packetfence/hospitality/internal/services/session"
 	"github.com/inverse-inc/packetfence/hospitality/internal/store"
 )
@@ -18,6 +19,7 @@ type Router struct {
 	Store       *store.Store
 	GuestAuth   *guestauth.Service
 	Sessions    *session.Service
+	Payments    *payment.Service
 	AdminAPIKey string
 	RateLimit   int
 }
@@ -46,6 +48,13 @@ func (a *Router) Handler() http.Handler {
 		r.With(a.adminAuth).Get("/properties/{id}/wifi-plans", a.listPlans)
 		r.With(a.adminAuth).Get("/guest-sessions", a.listSessions)
 		r.With(a.adminAuth).Post("/guest-sessions/{id}/revoke", a.revokeSession)
+		r.With(a.adminAuth).Post("/wifi-upgrades", a.upgrade)
+		r.With(a.adminAuth).Post("/wifi-entitlements/complimentary", a.complimentary)
+		r.With(a.adminAuth).Get("/events", a.listEvents)
+		r.With(a.adminAuth).Post("/events", a.createEvent)
+		r.With(a.adminAuth).Get("/events/{id}", a.getEvent)
+		r.With(a.adminAuth).Post("/consents", a.createConsent)
+		r.With(a.adminAuth).Get("/guest-profiles/{id}/consents", a.listConsents)
 	})
 	return r
 }
@@ -155,6 +164,9 @@ func (a *Router) getProperty(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Router) listPlans(w http.ResponseWriter, r *http.Request) {
+	if !a.propertyInOrganisation(w, r, chi.URLParam(r, "id")) {
+		return
+	}
 	items, err := a.Store.ListPlans(r.Context(), chi.URLParam(r, "id"), false)
 	if err != nil {
 		writeError(w, 500, "database error")
@@ -166,6 +178,9 @@ func (a *Router) listSessions(w http.ResponseWriter, r *http.Request) {
 	propertyID := r.URL.Query().Get("property_id")
 	if propertyID == "" {
 		writeError(w, 400, "property_id is required")
+		return
+	}
+	if !a.propertyInOrganisation(w, r, propertyID) {
 		return
 	}
 	items, err := a.Store.ListSessions(r.Context(), propertyID, r.URL.Query().Get("status"))
@@ -182,6 +197,155 @@ func (a *Router) revokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, item)
+}
+
+type upgradeRequest struct {
+	PropertyID     string `json:"property_id"`
+	SessionID      string `json:"session_id"`
+	PlanID         string `json:"plan_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	PaymentMethod  string `json:"payment_method"`
+}
+
+func (a *Router) upgrade(w http.ResponseWriter, r *http.Request) {
+	var req upgradeRequest
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req) != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	if a.Payments == nil {
+		writeError(w, 503, "payments unavailable")
+		return
+	}
+	if !a.propertyInOrganisation(w, r, req.PropertyID) {
+		return
+	}
+	result, err := a.Payments.Upgrade(r.Context(), payment.UpgradeRequest{PropertyID: req.PropertyID, SessionID: req.SessionID, PlanID: req.PlanID, IdempotencyKey: req.IdempotencyKey, PaymentMethod: req.PaymentMethod})
+	if errors.Is(err, payment.ErrInvalidUpgrade) || errors.Is(err, payment.ErrPaymentFailed) {
+		writeError(w, 400, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, 502, "payment service unavailable")
+		return
+	}
+	writeJSON(w, 201, result)
+}
+func (a *Router) complimentary(w http.ResponseWriter, r *http.Request) {
+	var req upgradeRequest
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req) != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	if a.Payments == nil {
+		writeError(w, 503, "payments unavailable")
+		return
+	}
+	if !a.propertyInOrganisation(w, r, req.PropertyID) {
+		return
+	}
+	result, err := a.Payments.ActivateComplimentary(r.Context(), payment.UpgradeRequest{PropertyID: req.PropertyID, SessionID: req.SessionID, PlanID: req.PlanID, IdempotencyKey: req.IdempotencyKey})
+	if errors.Is(err, payment.ErrInvalidUpgrade) {
+		writeError(w, 400, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "entitlement service unavailable")
+		return
+	}
+	writeJSON(w, 201, result)
+}
+
+func (a *Router) listEvents(w http.ResponseWriter, r *http.Request) {
+	propertyID := r.URL.Query().Get("property_id")
+	if propertyID == "" {
+		writeError(w, 400, "property_id is required")
+		return
+	}
+	if !a.propertyInOrganisation(w, r, propertyID) {
+		return
+	}
+	items, err := a.Store.ListEvents(r.Context(), propertyID)
+	if err != nil {
+		writeError(w, 500, "database error")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (a *Router) createEvent(w http.ResponseWriter, r *http.Request) {
+	var event models.Event
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024)).Decode(&event) != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	if event.PropertyID == "" || event.Name == "" || event.EndsAt.Before(event.StartsAt) || event.AccessCode == "" {
+		writeError(w, 400, "invalid event")
+		return
+	}
+	if !a.propertyInOrganisation(w, r, event.PropertyID) {
+		return
+	}
+	event.Status = "draft"
+	item, err := a.Store.CreateEvent(r.Context(), &event)
+	if err != nil {
+		writeError(w, 500, "database error")
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (a *Router) getEvent(w http.ResponseWriter, r *http.Request) {
+	item, err := a.Store.GetEvent(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 404, "not found")
+		return
+	}
+	if !a.propertyInOrganisation(w, r, item.PropertyID) {
+		return
+	}
+	writeJSON(w, 200, item)
+}
+
+func (a *Router) createConsent(w http.ResponseWriter, r *http.Request) {
+	var consent models.Consent
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&consent) != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	if consent.PropertyID == "" || consent.ConsentType == "" || consent.PolicyVersion == "" || consent.Language == "" || consent.Source == "" {
+		writeError(w, 400, "invalid consent")
+		return
+	}
+	if !a.propertyInOrganisation(w, r, consent.PropertyID) {
+		return
+	}
+	item, err := a.Store.CreateConsent(r.Context(), &consent)
+	if err != nil {
+		writeError(w, 500, "database error")
+		return
+	}
+	writeJSON(w, 201, item)
+}
+func (a *Router) listConsents(w http.ResponseWriter, r *http.Request) {
+	items, err := a.Store.ListConsentsByProfile(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, 500, "database error")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (a *Router) propertyInOrganisation(w http.ResponseWriter, r *http.Request, propertyID string) bool {
+	organisationID := r.Header.Get("X-Organisation-ID")
+	if organisationID == "" {
+		writeError(w, http.StatusBadRequest, "X-Organisation-ID is required")
+		return false
+	}
+	property, err := a.Store.GetProperty(r.Context(), propertyID)
+	if err != nil || property.OrganisationID != organisationID {
+		writeError(w, http.StatusNotFound, "not found")
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

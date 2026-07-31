@@ -1,0 +1,145 @@
+openapi: 3.0.3
+info:
+  title: PacketFence Hospitality API
+  version: 1.0.0
+  description: Hotel guest access and engagement integration boundary.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health/live:
+    get:
+      summary: Liveness check
+      responses:
+        '200': { description: Service is alive }
+  /health/ready:
+    get:
+      summary: Readiness check
+      responses:
+        '200': { description: Database is ready }
+        '503': { description: Dependency unavailable }
+  /api/v1/guest-auth/room:
+    post:
+      summary: Authenticate a hotel guest by room and surname
+      description: Returns a generic error for all invalid room or surname combinations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomAuthRequest' }
+      responses:
+        '201': { description: Guest access granted }
+        '400': { description: Invalid request }
+        '401': { description: Guest details could not be validated }
+        '429': { description: Rate limit exceeded }
+  /api/v1/wifi-upgrades:
+    post:
+      security: [{ apiKey: [] }]
+      summary: Purchase a Wi-Fi plan using the configured folio/payment adapter
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpgradeRequest' }
+      responses:
+        '201': { description: Payment and entitlement created }
+        '400': { description: Invalid upgrade or failed payment }
+  /api/v1/wifi-entitlements/complimentary:
+    post:
+      security: [{ apiKey: [] }]
+      summary: Activate an approved complimentary Wi-Fi plan
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpgradeRequest' }
+      responses:
+        '201': { description: Entitlement created }
+  /api/v1/properties:
+    get:
+      security: [{ apiKey: [] }]
+      summary: List properties for an organisation
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - $ref: '#/components/parameters/Organisation'
+      responses: { '200': { description: Property list } }
+    post:
+      security: [{ apiKey: [] }]
+      summary: Create a property
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - $ref: '#/components/parameters/Organisation'
+      responses: { '201': { description: Property created } }
+  /api/v1/guest-sessions/{id}/revoke:
+    post:
+      security: [{ apiKey: [] }]
+      summary: Revoke a guest session and disconnect PacketFence
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Session revoked }
+  /api/v1/events:
+    get:
+      security: [{ apiKey: [] }]
+      summary: List property events
+      parameters:
+        - $ref: '#/components/parameters/ApiKey'
+        - in: query
+          name: property_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses: { '200': { description: Event list } }
+    post:
+      security: [{ apiKey: [] }]
+      summary: Create an event
+      responses: { '201': { description: Event created } }
+  /api/v1/consents:
+    post:
+      security: [{ apiKey: [] }]
+      summary: Record an explicit consent decision
+      responses: { '201': { description: Consent recorded } }
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  parameters:
+    ApiKey:
+      in: header
+      name: X-API-Key
+      required: true
+      schema: { type: string }
+    Organisation:
+      in: header
+      name: X-Organisation-ID
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    RoomAuthRequest:
+      type: object
+      required: [property_id, room_number, last_name, mac_address]
+      properties:
+        property_id: { type: string, format: uuid }
+        room_number: { type: string, maxLength: 50 }
+        last_name: { type: string, maxLength: 255, writeOnly: true }
+        mac_address: { type: string, pattern: '^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$' }
+        plan_id: { type: string, format: uuid }
+        plan_role: { type: string, maxLength: 255 }
+        max_devices: { type: integer, minimum: 1, maximum: 50 }
+    UpgradeRequest:
+      type: object
+      required: [property_id, session_id, plan_id, idempotency_key]
+      properties:
+        property_id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        idempotency_key: { type: string, maxLength: 255 }
+        payment_method: { type: string, enum: [folio] }

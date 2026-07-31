@@ -88,6 +88,29 @@ func (s *Store) ListProperties(ctx context.Context, orgID string) ([]models.Prop
 	return props, rows.Err()
 }
 
+func (s *Store) ListAllProperties(ctx context.Context) ([]models.Property, error) {
+	rows, err := s.DB.Pool.Query(ctx, `
+		SELECT id, hotel_group_id, organisation_id, name, code, timezone, country, language,
+			check_in_time, check_out_time, grace_period_minutes, access_fallback_policy, consent_policy_version,
+			created_at, updated_at
+		FROM properties ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	properties := []models.Property{}
+	for rows.Next() {
+		p := models.Property{}
+		if err := rows.Scan(&p.ID, &p.HotelGroupID, &p.OrganisationID, &p.Name, &p.Code, &p.Timezone, &p.Country, &p.Language,
+			&p.CheckInTime, &p.CheckOutTime, &p.GracePeriodMinutes, &p.AccessFallbackPolicy, &p.ConsentPolicyVersion,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		properties = append(properties, p)
+	}
+	return properties, rows.Err()
+}
+
 func (s *Store) UpdateProperty(ctx context.Context, p *models.Property) error {
 	p.UpdatedAt = now()
 	_, err := s.DB.Pool.Exec(ctx, `
