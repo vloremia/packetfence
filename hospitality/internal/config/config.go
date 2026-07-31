@@ -11,6 +11,8 @@ type Config struct {
 	HTTPPort           string
 	DatabaseURL        string
 	SecretKey          string
+	PacketFenceAPIURL  string
+	PacketFenceToken   string
 	RateLimitPerMinute int
 	GracePeriod        time.Duration
 	LogLevel           string
@@ -22,6 +24,8 @@ func Load() (*Config, error) {
 		HTTPPort:           getEnv("HOSPITALITY_PORT", "8080"),
 		DatabaseURL:        getEnv("DATABASE_URL", "postgres://hospitality:hospitality@localhost:5432/hospitality"),
 		SecretKey:          getEnv("HOSPITALITY_SECRET_KEY", ""),
+		PacketFenceAPIURL:  getEnv("PACKETFENCE_API_URL", ""),
+		PacketFenceToken:   getEnv("PACKETFENCE_API_TOKEN", ""),
 		RateLimitPerMinute: getEnvInt("HOSPITALITY_RATE_LIMIT_PER_MINUTE", 120),
 		GracePeriod:        time.Duration(getEnvInt("HOSPITALITY_GRACE_PERIOD_MINUTES", 120)) * time.Minute,
 		LogLevel:           getEnv("HOSPITALITY_LOG_LEVEL", "info"),
